@@ -17,6 +17,8 @@ import android.support.v7.widget.Toolbar;
 import android.util.Log;
 import android.widget.Toast;
 
+import com.danielcswain.fogofwar.Data.LocationObject;
+import com.danielcswain.fogofwar.Data.SQLDatabaseHelper;
 import com.danielcswain.fogofwar.OpenSourcePackages.PermissionUtils;
 import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.common.api.ResolvableApiException;
@@ -34,15 +36,21 @@ import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.GoogleMap.OnMyLocationButtonClickListener;
 import com.google.android.gms.maps.OnMapReadyCallback;
+import com.google.android.gms.maps.Projection;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.UiSettings;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.LatLngBounds;
 import com.google.android.gms.tasks.OnFailureListener;
 import com.google.android.gms.tasks.OnSuccessListener;
+
+import java.util.List;
 
 import static com.danielcswain.fogofwar.R.id.map;
 
 public class MainActivity extends AppCompatActivity
         implements
+        GoogleMap.OnCameraMoveListener,
         OnMyLocationButtonClickListener,
         OnMapReadyCallback,
         ActivityCompat.OnRequestPermissionsResultCallback {
@@ -59,12 +67,15 @@ public class MainActivity extends AppCompatActivity
     private boolean mPermissionDenied = false;
 
     private FusedLocationProviderClient mFusedLocationClient;
-    private GoogleMap mMap;
+    public static GoogleMap mMap;
     private Location mCurrentLocation;
     private LocationCallback mLocationCallback;
     private LocationRequest mLocationRequest;
     private LocationSettingsRequest mLocationSettingsRequest;
     private SettingsClient mSettingsClient;
+
+    private SQLDatabaseHelper mSqlDatabaseHelper;
+    private OverlayView overlayView;
 
     /**
      * Create the Activity, initalising the layout and toolbar as well as the map fragment.
@@ -73,6 +84,10 @@ public class MainActivity extends AppCompatActivity
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Get the database helper and overlay view.
+        mSqlDatabaseHelper = new SQLDatabaseHelper(this);
+        overlayView = findViewById(R.id.overlay);
 
         // Set up the ActionBar.
         Toolbar myToolbar = findViewById(R.id.my_toolbar);
@@ -257,35 +272,86 @@ public class MainActivity extends AppCompatActivity
 
         // Enable the MyLocation Button if the Fine location permission is enabled.
         mMap.setOnMyLocationButtonClickListener(this);
-        enableMyLocation();
+
+        configureMapSettings();
+
+        // The CameraMoveListener redraws the path when the user pans the camera.
+        mMap.setOnCameraMoveListener(this);
     }
 
     /**
-     * Update the map pointer position with the current location.
+     * Update the map pointer position with the current location and store the location in the
+     * database.
      */
     private void updateLocationUI() {
         if (mCurrentLocation != null) {
             double latitude = mCurrentLocation.getLatitude();
             double longitude = mCurrentLocation.getLongitude();
             LatLng latLng = new LatLng(latitude, longitude);
+            saveCurrentLocation(latLng);
+
             CameraUpdate cameraUpdate = CameraUpdateFactory.newLatLngZoom(latLng, 17);
-            mMap.animateCamera(cameraUpdate);
+            mMap.animateCamera(cameraUpdate, new GoogleMap.CancelableCallback() {
+                @Override
+                public void onFinish() {
+                    drawPathInMapBounds();
+                }
+
+                @Override
+                public void onCancel() {
+                    drawPathInMapBounds();
+                }
+            });
         }
+    }
+
+    /**
+     * Save the current location to the database.
+     * @param latLng: A LatLng object representing the current location.
+     */
+    private void saveCurrentLocation(LatLng latLng) {
+        LocationObject locationObject = new LocationObject(latLng);
+        mSqlDatabaseHelper.addLocation(locationObject);
+    }
+
+    /**
+     * Draw the visited locations that are in the map's bounds.
+     */
+    private void drawPathInMapBounds() {
+        // Get the map bounds and the LocationObjects in the bounds.
+        Projection mapProjection = mMap.getProjection();
+        LatLngBounds mapBounds = mapProjection.getVisibleRegion().latLngBounds;
+
+        List<LocationObject> locationObjects = mSqlDatabaseHelper.getLocationsInWindow(mapBounds);
+
+        overlayView.drawPathInMapBounds(locationObjects);
     }
 
     /**
      * Enables the My Location layer if the fine location permission has been granted.
      */
-    private void enableMyLocation() {
+    private void configureMapSettings() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             // Permission to access the location is missing.
             PermissionUtils.requestPermission(this, LOCATION_PERMISSION_REQUEST_CODE,
                     Manifest.permission.ACCESS_FINE_LOCATION, true);
         } else if (mMap != null) {
-            // Access to the location has been granted to the app.
+            // Access to the location has been granted to the app, so configure the view.
             mMap.setMyLocationEnabled(true);
+            // And configure the map's UI settings.
+            UiSettings uiSettings = mMap.getUiSettings();
+            uiSettings.setZoomControlsEnabled(true);
+            uiSettings.setCompassEnabled(true);
         }
+    }
+
+    /**
+     * When the map camera moves, update the path as new path points may have entered the bounds.
+     */
+    @Override
+    public void onCameraMove() {
+        drawPathInMapBounds();
     }
 
     /**
