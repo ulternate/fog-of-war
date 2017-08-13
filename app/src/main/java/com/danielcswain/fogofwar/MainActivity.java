@@ -1,21 +1,45 @@
 package com.danielcswain.fogofwar;
 
 import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
+import android.content.IntentSender;
 import android.content.pm.PackageManager;
+import android.location.Location;
 import android.os.Bundle;
+import android.os.Looper;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
+import android.util.Log;
 import android.widget.Toast;
 
 import com.danielcswain.fogofwar.OpenSourcePackages.PermissionUtils;
+import com.google.android.gms.common.api.ApiException;
+import com.google.android.gms.common.api.ResolvableApiException;
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.LocationSettingsRequest;
+import com.google.android.gms.location.LocationSettingsResponse;
+import com.google.android.gms.location.LocationSettingsStatusCodes;
+import com.google.android.gms.location.SettingsClient;
+import com.google.android.gms.maps.CameraUpdate;
+import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.GoogleMap.OnMyLocationButtonClickListener;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+
+import static com.danielcswain.fogofwar.R.id.map;
 
 public class MainActivity extends AppCompatActivity
         implements
@@ -23,11 +47,24 @@ public class MainActivity extends AppCompatActivity
         OnMapReadyCallback,
         ActivityCompat.OnRequestPermissionsResultCallback {
 
-    // Location permissions.
+    private static final String TAG = MainActivity.class.getSimpleName();
+
+    private static final int FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS = 5000;
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 1;
+    private static final int REQUEST_CHECK_SETTINGS = 2;
+    private static final int UPDATE_INTERVAL_IN_MILLISECONDS = 10000;
+
+    private final static String KEY_LOCATION = "location";
+
     private boolean mPermissionDenied = false;
 
+    private FusedLocationProviderClient mFusedLocationClient;
     private GoogleMap mMap;
+    private Location mCurrentLocation;
+    private LocationCallback mLocationCallback;
+    private LocationRequest mLocationRequest;
+    private LocationSettingsRequest mLocationSettingsRequest;
+    private SettingsClient mSettingsClient;
 
     /**
      * Create the Activity, initalising the layout and toolbar as well as the map fragment.
@@ -44,9 +81,170 @@ public class MainActivity extends AppCompatActivity
         // Show the Google Maps fragment.
         FragmentManager myFragmentManager = getSupportFragmentManager();
         SupportMapFragment mapFragment = (SupportMapFragment) myFragmentManager
-                .findFragmentById(R.id.map);
+                .findFragmentById(map);
         mapFragment.getMapAsync(this);
+
+        updateValuesFromBundle(savedInstanceState);
+
+        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+        mSettingsClient = LocationServices.getSettingsClient(this);
+
+        // Build the callbacks and requests required to get location updates.
+        createLocationCallback();
+        createLocationRequest();
+        buildLocationSettingsRequest();
     }
+
+    /**
+     * Updates the location based on data stored in the bundle.
+     *
+     * @param savedInstanceState The activity state saved in the Bundle.
+     */
+    private void updateValuesFromBundle(Bundle savedInstanceState) {
+        if (savedInstanceState != null) {
+
+            // Update the value of mCurrentLocation from the Bundle and update the map to show
+            // the previous location.
+            if (savedInstanceState.keySet().contains(KEY_LOCATION)) {
+                mCurrentLocation = savedInstanceState.getParcelable(KEY_LOCATION);
+                updateLocationUI();
+            }
+        }
+    }
+
+    /**
+     * Create a location request to receive location updates.
+     */
+    private void createLocationRequest() {
+        mLocationRequest = new LocationRequest();
+        mLocationRequest.setInterval(UPDATE_INTERVAL_IN_MILLISECONDS);
+        mLocationRequest.setFastestInterval(FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS);
+        mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+    }
+
+    /**
+     * Creates a callback for receiving location events and updating the position on the map.
+     */
+    private void createLocationCallback() {
+        mLocationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(LocationResult locationResult) {
+                super.onLocationResult(locationResult);
+
+                mCurrentLocation = locationResult.getLastLocation();
+                updateLocationUI();
+            }
+        };
+    }
+
+    /**
+     * Build a LocationSettingsRequest to check if a device has the required location settings.
+     */
+    private void buildLocationSettingsRequest() {
+        LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder();
+        builder.addLocationRequest(mLocationRequest);
+        mLocationSettingsRequest = builder.build();
+    }
+
+    /**
+     * Requests location updates from the FusedLocationApi. Note: we don't call this unless location
+     * runtime permission has been granted.
+     */
+    private void startLocationUpdates() {
+        // Begin by checking if the device has the necessary location settings.
+        mSettingsClient.checkLocationSettings(mLocationSettingsRequest)
+                .addOnSuccessListener(this, new OnSuccessListener<LocationSettingsResponse>() {
+                    @Override
+                    public void onSuccess(LocationSettingsResponse locationSettingsResponse) {
+                        Log.i(TAG, "All location settings are satisfied.");
+
+                        //noinspection MissingPermission
+                        mFusedLocationClient.requestLocationUpdates(mLocationRequest,
+                                mLocationCallback, Looper.myLooper());
+
+                        updateLocationUI();
+                    }
+                })
+                .addOnFailureListener(this, new OnFailureListener() {
+                    @Override
+                    public void onFailure(@NonNull Exception e) {
+                        int statusCode = ((ApiException) e).getStatusCode();
+                        switch (statusCode) {
+                            case LocationSettingsStatusCodes.RESOLUTION_REQUIRED:
+                                Log.i(TAG, "Location settings are not satisfied. Attempting to upgrade " +
+                                        "location settings ");
+                                try {
+                                    // Show the dialog by calling startResolutionForResult(), and check the
+                                    // result in onActivityResult().
+                                    ResolvableApiException rae = (ResolvableApiException) e;
+                                    rae.startResolutionForResult(MainActivity.this, REQUEST_CHECK_SETTINGS);
+                                } catch (IntentSender.SendIntentException sie) {
+                                    Log.i(TAG, "PendingIntent unable to execute request.");
+                                }
+                                break;
+                            case LocationSettingsStatusCodes.SETTINGS_CHANGE_UNAVAILABLE:
+                                String errorMessage = "Location settings are inadequate, and cannot be " +
+                                        "fixed here. Fix in Settings.";
+                                Log.e(TAG, errorMessage);
+                                Toast.makeText(MainActivity.this, errorMessage, Toast.LENGTH_LONG).show();
+                        }
+
+                        updateLocationUI();
+                    }
+                });
+    }
+
+    /**
+     * Removes location updates from the FusedLocationApi.
+     */
+    private void stopLocationUpdates() {
+        mFusedLocationClient.removeLocationUpdates(mLocationCallback);
+    }
+
+    /**
+     * Start location updates if the correct location permission is available, otherwise request it.
+     */
+    @Override
+    public void onResume() {
+        super.onResume();
+
+        if (checkPermissions()) {
+            startLocationUpdates();
+        } else {
+            PermissionUtils.requestPermission(this, LOCATION_PERMISSION_REQUEST_CODE,
+                    Manifest.permission.ACCESS_FINE_LOCATION, true);
+        }
+
+        updateLocationUI();
+    }
+
+    /**
+     * Stop location updates when the activity is exited.
+     */
+    @Override
+    protected void onPause() {
+        super.onPause();
+
+        stopLocationUpdates();
+    }
+
+    /**
+     * Store the location data in the Bundle.
+     */
+    public void onSaveInstanceState(Bundle savedInstanceState) {
+        savedInstanceState.putParcelable(KEY_LOCATION, mCurrentLocation);
+        super.onSaveInstanceState(savedInstanceState);
+    }
+
+    /**
+     * Return the current state of the permissions needed.
+     */
+    private boolean checkPermissions() {
+        int permissionState = ActivityCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_FINE_LOCATION);
+        return permissionState == PackageManager.PERMISSION_GRANTED;
+    }
+
 
     /**
      * Set the MyLocation button callback on the GoogleMap map object when it is ready.
@@ -60,6 +258,19 @@ public class MainActivity extends AppCompatActivity
         // Enable the MyLocation Button if the Fine location permission is enabled.
         mMap.setOnMyLocationButtonClickListener(this);
         enableMyLocation();
+    }
+
+    /**
+     * Update the map pointer position with the current location.
+     */
+    private void updateLocationUI() {
+        if (mCurrentLocation != null) {
+            double latitude = mCurrentLocation.getLatitude();
+            double longitude = mCurrentLocation.getLongitude();
+            LatLng latLng = new LatLng(latitude, longitude);
+            CameraUpdate cameraUpdate = CameraUpdateFactory.newLatLngZoom(latLng, 17);
+            mMap.animateCamera(cameraUpdate);
+        }
     }
 
     /**
@@ -108,6 +319,30 @@ public class MainActivity extends AppCompatActivity
         } else {
             // Display the missing permission error dialog when the fragments resume.
             mPermissionDenied = true;
+        }
+    }
+
+    /**
+     * Handle a Generic Activity Request result.
+     * @param requestCode: int representing the request code used by the activity.
+     * @param resultCode: int representing the result of the activity.
+     * @param data: Intent containing any data sent back by the activity when it finished.
+     */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        switch (requestCode) {
+            // Check for the integer request code originally supplied to startResolutionForResult().
+            case REQUEST_CHECK_SETTINGS:
+                switch (resultCode) {
+                    case Activity.RESULT_OK:
+                        // Nothing to do. startLocationupdates() gets called in onResume again.
+                        break;
+                    case Activity.RESULT_CANCELED:
+                        // No changes made to the location settings.
+                        updateLocationUI();
+                        break;
+                }
+                break;
         }
     }
 
