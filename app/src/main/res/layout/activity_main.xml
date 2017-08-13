@@ -1,4 +1,4 @@
-<LinearLayout
+<RelativeLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -22,5 +22,11 @@
         android:name="com.google.android.gms.maps.SupportMapFragment"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        tools:context="com.danielcswain.fogofwar.MainActivity"/>
-</LinearLayout>
+        tools:context="com.danielcswain.fogofwar.MainActivity"
+        android:layout_below="@+id/my_toolbar"/>
+
+    <com.danielcswain.fogofwar.OverlayView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_below="@+id/my_toolbar"/>
+</RelativeLayout>
