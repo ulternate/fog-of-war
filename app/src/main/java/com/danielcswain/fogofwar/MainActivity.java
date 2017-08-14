@@ -73,6 +73,7 @@ public class MainActivity extends AppCompatActivity
     private LocationRequest mLocationRequest;
     private LocationSettingsRequest mLocationSettingsRequest;
     private SettingsClient mSettingsClient;
+    private float mCurrentZoom = -1;
 
     private SQLDatabaseHelper mSqlDatabaseHelper;
     private OverlayView overlayView;
@@ -290,7 +291,14 @@ public class MainActivity extends AppCompatActivity
             LatLng latLng = new LatLng(latitude, longitude);
             saveCurrentLocation(latLng);
 
-            CameraUpdate cameraUpdate = CameraUpdateFactory.newLatLngZoom(latLng, 17);
+            // Default zoom is 17 unless the user has changed the maps zoom.
+            if (mCurrentZoom == -1) {
+                mCurrentZoom = 17;
+            } else {
+                mCurrentZoom = mMap.getCameraPosition().zoom;
+            }
+
+            CameraUpdate cameraUpdate = CameraUpdateFactory.newLatLngZoom(latLng, mCurrentZoom);
             mMap.animateCamera(cameraUpdate, new GoogleMap.CancelableCallback() {
                 @Override
                 public void onFinish() {
